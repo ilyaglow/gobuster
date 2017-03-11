@@ -19,10 +19,9 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/satori/go.uuid"
-	"golang.org/x/crypto/ssh/terminal"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -35,18 +34,30 @@ import (
 	"sync"
 	"syscall"
 	"unicode/utf8"
+
+	"github.com/satori/go.uuid"
+	"golang.org/x/crypto/ssh/terminal"
 )
 
 // A single result which comes from an individual web
 // request.
 type Result struct {
-	Entity string
-	Status int
-	Extra  string
-	Size   *int64
+	Entity string `json:"entity"`
+	Status int    `json:"status"`
+	Extra  string `json:"extra"`
+	Size   *int64 `json:"size"`
 }
 
-type PrintResultFunc func(s *State, r *Result)
+// JsonOutput defines top level json output
+type OverallResults struct {
+	Target   string   `json:"target"`
+	Mode     string   `json:"mode"`
+	Wordlist string   `json:"wordlist"`
+	Total    int      `json:"total"`
+	Hits     []Result `json:"hits"`
+}
+
+type PrintResultFunc func(s *State, r *Result, o *OverallResults, m *sync.Mutex)
 type ProcessorFunc func(s *State, entity string, resultChan chan<- Result)
 type SetupFunc func(s *State) bool
 
@@ -89,6 +100,7 @@ type State struct {
 	Wordlist       string
 	OutputFileName string
 	OutputFile     *os.File
+	OutputType     string
 	IsWildcard     bool
 	WildcardForced bool
 	WildcardIps    StringSet
@@ -250,6 +262,7 @@ func ParseCmdLine() *State {
 	flag.StringVar(&s.Wordlist, "w", "", "Path to the wordlist")
 	flag.StringVar(&codes, "s", "200,204,301,302,307", "Positive status codes (dir mode only)")
 	flag.StringVar(&s.OutputFileName, "o", "", "Output file to write results to (defaults to stdout)")
+	flag.StringVar(&s.OutputType, "ot", "plain", "Output file type: json or plain (default to plain)")
 	flag.StringVar(&s.Url, "u", "", "The target URL or Domain")
 	flag.StringVar(&s.Cookies, "c", "", "Cookies to use for the requests (dir mode only)")
 	flag.StringVar(&s.Username, "U", "", "Username for Basic Auth (dir mode only)")
@@ -441,6 +454,16 @@ func Process(s *State) {
 	wordChan := make(chan string, s.Threads)
 	resultChan := make(chan Result)
 
+	// Results slice meant to be written to file
+	outputResults := OverallResults{
+		Target:   s.Url,
+		Mode:     s.Mode,
+		Wordlist: s.Wordlist,
+	}
+
+	// Define Mutex for goroutine-safe results appending
+	m := sync.Mutex{}
+
 	// Use a wait group for waiting for all threads
 	// to finish
 	processorGroup := new(sync.WaitGroup)
@@ -474,7 +497,7 @@ func Process(s *State) {
 	// appear from the worker threads.
 	go func() {
 		for r := range resultChan {
-			s.Printer(s, &r)
+			s.Printer(s, &r, &outputResults, &m)
 		}
 		printerGroup.Done()
 	}()
@@ -524,10 +547,38 @@ func Process(s *State) {
 	processorGroup.Wait()
 	close(resultChan)
 	printerGroup.Wait()
+
 	if s.OutputFile != nil {
 		outputFile.Close()
 	}
+
 	Ruler(s)
+
+	outputResults.Total = len(outputResults.Hits)
+
+	// Output JSON if needed
+	if s.OutputFileName != "" && s.OutputType == "json" {
+		var jsonOutput *os.File
+		jsonOutput, err := os.Create(s.OutputFileName)
+		if err != nil {
+			fmt.Sprintf("[!] Unable to write to %s", s.OutputFileName)
+		} else {
+			defer jsonOutput.Close()
+
+			b, err := json.Marshal(outputResults)
+			if err != nil {
+				fmt.Println("Json marshal error:", err)
+			} else {
+				_, err := jsonOutput.Write(b)
+				if err != nil {
+					fmt.Println("Unable to write to file")
+					panic(err)
+				}
+				fmt.Println("JSON-output has been written to", s.OutputFileName)
+			}
+		}
+	}
+
 }
 
 func SetupDns(s *State) bool {
@@ -631,8 +682,13 @@ func ProcessDirEntry(s *State, word string, resultChan chan<- Result) {
 	}
 }
 
-func PrintDnsResult(s *State, r *Result) {
+func PrintDnsResult(s *State, r *Result, o *OverallResults, m *sync.Mutex) {
 	output := ""
+
+	m.Lock()
+	o.Hits = append(o.Hits, *r)
+	m.Unlock()
+
 	if r.Status == 404 {
 		output = fmt.Sprintf("Missing: %s\n", r.Entity)
 	} else if s.ShowIPs {
@@ -649,7 +705,7 @@ func PrintDnsResult(s *State, r *Result) {
 	}
 }
 
-func PrintDirResult(s *State, r *Result) {
+func PrintDirResult(s *State, r *Result, o *OverallResults, m *sync.Mutex) {
 	output := ""
 
 	// Prefix if we're in verbose mode
@@ -662,6 +718,10 @@ func PrintDirResult(s *State, r *Result) {
 	}
 
 	if s.StatusCodes.Contains(r.Status) || s.Verbose {
+		m.Lock()
+		o.Hits = append(o.Hits, *r)
+		m.Unlock()
+
 		if s.Expanded {
 			output += s.Url
 		} else {
