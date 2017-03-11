@@ -48,7 +48,7 @@ type Result struct {
 	Size   *int64 `json:"size"`
 }
 
-// JsonOutput defines top level json output
+// OverallResults defines final output struct
 type OverallResults struct {
 	Target   string   `json:"target"`
 	Mode     string   `json:"mode"`
@@ -454,7 +454,7 @@ func Process(s *State) {
 	wordChan := make(chan string, s.Threads)
 	resultChan := make(chan Result)
 
-	// Results slice meant to be written to file
+	// outputResults meant to be written to file as final output
 	outputResults := OverallResults{
 		Target:   s.Url,
 		Mode:     s.Mode,
