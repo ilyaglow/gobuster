@@ -262,7 +262,7 @@ func ParseCmdLine() *State {
 	flag.StringVar(&s.Wordlist, "w", "", "Path to the wordlist")
 	flag.StringVar(&codes, "s", "200,204,301,302,307", "Positive status codes (dir mode only)")
 	flag.StringVar(&s.OutputFileName, "o", "", "Output file to write results to (defaults to stdout)")
-	flag.StringVar(&s.OutputType, "ot", "plain", "Output file type: json or plain (default to plain)")
+	flag.StringVar(&s.OutputType, "ot", "plain", "Output file type: json or plain")
 	flag.StringVar(&s.Url, "u", "", "The target URL or Domain")
 	flag.StringVar(&s.Cookies, "c", "", "Cookies to use for the requests (dir mode only)")
 	flag.StringVar(&s.Username, "U", "", "Username for Basic Auth (dir mode only)")
@@ -519,8 +519,8 @@ func Process(s *State) {
 		scanner = bufio.NewScanner(wordlist)
 	}
 
-	var outputFile *os.File
-	if s.OutputFileName != "" {
+	if s.OutputFileName != "" && s.OutputType == "plain" {
+		var outputFile *os.File
 		outputFile, err := os.Create(s.OutputFileName)
 		if err != nil {
 			fmt.Printf("[!] Unable to write to %s, falling back to stdout.\n", s.OutputFileName)
@@ -549,7 +549,7 @@ func Process(s *State) {
 	printerGroup.Wait()
 
 	if s.OutputFile != nil {
-		outputFile.Close()
+		s.OutputFile.Close()
 	}
 
 	Ruler(s)
